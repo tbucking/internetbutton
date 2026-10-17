@@ -130,7 +130,7 @@ static void paint(int brightness)
     lastPaint = brightness;
 
     if (brightness == 0) { b.allLedsOff(); return; }
-    b.allLedsOn(brightness, brightness * 3 / 4, 0);   // amber, dimmed
+    b.allLedsOn(0, brightness, 0);   // green
 }
 
 static void serviceLed()
