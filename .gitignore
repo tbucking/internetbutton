@@ -1,0 +1,11 @@
+# The InternetButton library is kept once, in vendor/InternetButton, and copied
+# into each project at build time by build.sh.
+#
+# It is copied rather than symlinked because `particle compile` does not follow
+# symlinks unless --followSymlinks is passed, and it is not submoduled because a
+# submodule still would not land where the compiler looks for it (lib/).
+firmware/*/lib/InternetButton/
+
+# Build output
+*.bin
+build/

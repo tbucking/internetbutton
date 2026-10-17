@@ -51,14 +51,22 @@ particle compile photon .                  ->  "depends on system module 2 at ve
 So, every build:
 
 ```sh
-cd firmware/<project>
-particle compile photon . --target 2.3.1 --saveTo <project>.bin
-particle binary inspect <project>.bin        # MUST say version 2302
-particle flash <device-id> <project>.bin
+./build.sh simon              # build
+./build.sh simon --flash      # build, verify, flash
+./build.sh --list             # show projects
 ```
 
-`--target` prints `Targeting version: 2.3.1`. **If that line is missing from the build output, the flag
-did not apply.** The `particle binary inspect` check is the authoritative one.
+**Always build through `build.sh`.** It applies `--target 2.3.1`, syncs the vendored library, and then
+reads the binary's declared dependency and **refuses to hand it over if it is not 2302**. That last
+check is the point: it is the one mistake here that is silent and expensive otherwise.
+
+If you build by hand instead, `--target` prints `Targeting version: 2.3.1`. **If that line is missing
+from the build output, the flag did not apply.** The authoritative check is:
+
+```sh
+particle compile photon firmware/simon --target 2.3.1 --saveTo simon.bin
+particle binary inspect simon.bin        # MUST say version 2302
+```
 
 ---
 
@@ -76,24 +84,41 @@ Four standalone projects, each a complete Particle application. Only one can run
 `shield-check` and `desk-presence` have no README yet — their purpose is above, but the detail is not
 written up.
 
-Each project is self-contained: `project.properties`, `src/`, and a vendored copy of the
-[InternetButton](https://github.com/spark/internetbutton) library under `lib/`.
+Each project is self-contained: `project.properties`, `src/`, and the
+[InternetButton](https://github.com/spark/internetbutton) library.
 
-### Building
+### The build system
+
+The library is kept **once**, in `vendor/InternetButton`, and copied into a project by `build.sh` at
+build time. The per-project copies are gitignored, so the repository stores a single copy.
+
+That copying step is not laziness — `particle compile` **does not follow symlinks**, which was
+established by testing rather than assumed:
+
+```text
+lrwxrwxrwx lib/InternetButton -> ../../vendor/InternetButton
+src/simon.ino:39:10: fatal error: InternetButton.h: No such file or directory
+```
+
+It does have a `--followSymlinks` flag, but relying on it means every build needs *two* flags that are
+easy to forget — and forgetting `--target` is the expensive one. A script that always passes both is
+safer than a symlink that silently depends on remembering.
+
+A git submodule was rejected for the same reason: it still would not land where the compiler looks
+(`lib/`), so it would also need a copy step.
 
 `particle project create` and `particle library add` **hang** on this setup (no output, exit code `124`)
-and create nothing. The projects are therefore assembled by hand, which the compiler accepts without
-complaint:
+and create nothing, so project scaffolding is by hand, which the compiler accepts without complaint:
 
 ```text
 <project>/
   project.properties     name=<project>
   src/<name>.ino
-  lib/InternetButton/    unmodified upstream library
+  lib/InternetButton/    copied from vendor/ by build.sh (gitignored)
 ```
 
-The library is fetched from `https://library-archives.particle.io/libraries/InternetButton/InternetButton-0.1.10.tar.gz`
-rather than via the CLI, because the CLI path hangs.
+The vendored library came from
+`https://library-archives.particle.io/libraries/InternetButton/InternetButton-0.1.10.tar.gz`.
 
 ### Why so much of this is testable without touching the device
 
@@ -118,12 +143,17 @@ Two recurring lessons came out of this (`docs/INIT.md` §8):
 ## Repository layout
 
 ```
+build.sh                      build + verify + optional flash; syncs the library
+vendor/InternetButton/        the library, stored once (LGPL, v0.1.10)
 docs/INIT.md                  full bring-up log: diagnosis, faults, corrections
 firmware/shield-check/        hardware verification
 firmware/interval-timer/      pomodoro timer
 firmware/desk-presence/       motion-based presence detection
 firmware/simon/               memory game
 ```
+
+Per-project `lib/InternetButton/` directories exist on disk after a build but are **gitignored** —
+`vendor/InternetButton` is the single source of truth.
 
 ## Verification status
 
@@ -142,10 +172,12 @@ Honest accounting, because "it compiles" is not "it works":
 
 ## Notes
 
-- **The `InternetButton` library is vendored (LGPL, v0.1.10, Richard Whitney), not submoduled.** It is
-  duplicated into each project — 15 files × 4 projects. A submodule or a shared `lib/` would be tidier;
-  it is duplicated because the CLI's own library command does not work here.
-- **Never commit credentials.** The IoT device's Wi-Fi credentials live on the device, not in this repo,
-  and no access tokens are stored here.
-- Target hardware only: **Photon / P1**. None of this applies to Gen 3+ devices (Argon, Boron), which
-  run modern Device OS and have different peripherals.
+- **The `InternetButton` library is vendored (LGPL, v0.1.10, Richard Whitney)**, stored once in
+  `vendor/` and copied into each project by `build.sh`. See "The build system" above for why copying
+  rather than a symlink or a submodule.
+- **Build through `build.sh`, not by hand.** It is the only thing standing between a typo and a silent
+  Device OS upgrade.
+- **Never commit credentials.** The device's Wi-Fi credentials live on the device, not in this repo, and
+  no access tokens are stored here.
+- Target hardware only: **Photon / P1**. None of this applies to Gen 3+ devices (Argon, Boron), which run
+  modern Device OS and have different peripherals.
