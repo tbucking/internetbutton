@@ -1,132 +1,170 @@
-// ingest-activity
+// ingest-activity — receives a Particle webhook for the `activity` event and
+// parses the compact CSV that firmware/activity-log publishes.
 //
-// Receives a Particle webhook forward and writes aggregated activity buckets into
-// public.activity_buckets. See docs/ACTIVITY.md ("The cloud end") for the wire
-// format and rationale.
+// WHY CSV AND NOT JSON. The cloud caps a single event payload at 1024 bytes, and
+// JSON would spend much of that on punctuation and repeated key names. The
+// firmware therefore sends:
 //
-// The webhook posts JSON:
+//     v1,<startMin>,<n>,<count>,<sum>,<max>,<dz>;<count>,<sum>,<max>,<dz>;...
 //
-//   { event, data, coreid, published_at }
+// This function is the single place that format is understood; everything
+// downstream (Postgres, dashboards) sees ordinary rows.
 //
-// where `data` is the firmware's compact CSV:
-//
-//   v1,<startMin>,<n>,<count>,<sum>,<maxDelta>,<maxDz>;...
-//
-// `startMin` is unix minutes at the start of the first bucket. Buckets are
-// consecutive minutes, so bucket `i` starts at `startMin + i`. The single header
-// timestamp means a firmware clock jump that skips minutes would shift the
-// following buckets in the same event; that is a known, accepted limitation.
-
-import { createClient } from 'jsr:@supabase/supabase-js@2'
-
-// Auto-injected by the platform. The service-role key bypasses RLS, which is how
-// the function writes even though activity_buckets has RLS enabled with no
-// policies.
-const supabase = createClient(
-  Deno.env.get('SUPABASE_URL')!,
-  Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!,
-)
-
-interface Bucket {
-  device_id: string
-  bucket_start: string
-  impulses: number
-  impulse_sum: number
-  max_delta: number | null
-  max_dz: number | null
-  batch: number
+// IDEMPOTENCY. The firmware retries any bucket it could not confirm, so the same
+// bucket WILL arrive more than once. The table has
+// `unique (device_id, bucket_start)` and this inserts with
+// `ignoreDuplicates`, so a replay is a no-op rather than a duplicate row or an
+// error. A closed bucket is immutable, so ignoring a duplicate loses nothing.
+import { createClient } from "npm:@supabase/supabase-js@2";
+const VERSION = 1;
+const MAX_BUCKETS = 50; // matches BUCKETS_PER_PUB in the firmware
+function json(body, status = 200) {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: {
+      "content-type": "application/json"
+    }
+  });
 }
-
-function parsePayload(coreid: string, data: string): Bucket[] {
-  const m = /^v1,(\d+),(\d+),(.*)$/s.exec(data)
-  if (!m) {
-    throw new Error('unrecognized payload version')
+/**
+ * Parse `v1,<startMin>,<n>,<count>,<sum>,<max>,<dz>;...` into rows.
+ * Returns an error string instead of throwing so the reason is reportable.
+ */ function parseCsv(raw, deviceId) {
+  const text = raw.trim();
+  if (!text.startsWith("v")) return {
+    rows: [],
+    error: "payload does not start with a version tag"
+  };
+  // header is exactly three fields; everything after the third comma is groups
+  const first = text.indexOf(",");
+  const second = text.indexOf(",", first + 1);
+  const third = text.indexOf(",", second + 1);
+  if (first < 0 || second < 0 || third < 0) return {
+    rows: [],
+    error: "truncated header"
+  };
+  const version = Number(text.slice(1, first));
+  if (version !== VERSION) return {
+    rows: [],
+    error: `unsupported version ${version}`
+  };
+  const startMin = Number(text.slice(first + 1, second));
+  const declared = Number(text.slice(second + 1, third));
+  if (!Number.isFinite(startMin) || !Number.isFinite(declared)) {
+    return {
+      rows: [],
+      error: "non-numeric header"
+    };
   }
-  const startMin = Number(m[1])
-  const n = Number(m[2])
-  const rest = m[3]
-
-  const buckets: Bucket[] = []
-  for (const field of rest.split(';')) {
-    if (field === '') continue
-    const parts = field.split(',')
-    if (parts.length !== 4) throw new Error('malformed bucket record')
-
-    const count = Number(parts[0])
-    const sum = Number(parts[1])
-    const maxDelta = Number(parts[2])
-    const maxDz = Number(parts[3])
-    const batch = buckets.length
-
-    buckets.push({
-      device_id: coreid,
-      bucket_start: new Date((startMin + batch) * 60 * 1000).toISOString(),
+  const body = text.slice(third + 1);
+  const groups = body.split(";").map((g)=>g.trim()).filter((g)=>g.length > 0);
+  if (groups.length > MAX_BUCKETS) {
+    return {
+      rows: [],
+      error: `too many buckets: ${groups.length} > ${MAX_BUCKETS}`
+    };
+  }
+  if (declared !== groups.length) {
+    // Not fatal: a truncated tail is possible if the payload was cut. Parse what
+    // is actually there and let the caller see the discrepancy.
+    console.warn(`declared ${declared} buckets, parsed ${groups.length}`);
+  }
+  const rows = [];
+  for(let i = 0; i < groups.length; i++){
+    const f = groups[i].split(",").map((v)=>Number(v.trim()));
+    if (f.length !== 4 || f.some((v)=>!Number.isFinite(v) || v < 0)) {
+      console.warn(`skipping malformed bucket ${i}: ${groups[i]}`);
+      continue;
+    }
+    const [count, sum, max, dz] = f;
+    rows.push({
+      device_id: deviceId,
+      // the firmware sends unix MINUTES; this is the bucket's start, in UTC
+      bucket_start: new Date((startMin + i) * 60_000).toISOString(),
       impulses: count,
       impulse_sum: sum,
-      // The firmware sends 0 to mean "nothing to record" (see docs/ACTIVITY.md),
-      // which is stored as NULL rather than a misleading zero.
-      max_delta: maxDelta === 0 ? null : maxDelta,
-      max_dz: maxDz === 0 ? null : maxDz,
-      batch,
-    })
+      // 0 is ambiguous rather than meaningful for these two, so store NULL
+      max_delta: max === 0 ? null : max,
+      max_dz: dz === 0 ? null : dz,
+      batch: i
+    });
   }
-
-  // `n` is the firmware's intended count; the parsed records are authoritative,
-  // but a mismatch means the payload was truncated or corrupted.
-  if (buckets.length !== n) {
-    throw new Error(`expected ${n} buckets, parsed ${buckets.length}`)
-  }
-
-  return buckets
+  return {
+    rows
+  };
 }
-
-Deno.serve(async (req) => {
-  if (req.method !== 'POST') {
-    return new Response('method not allowed', { status: 405 })
+Deno.serve(async (req)=>{
+  if (req.method === "GET") {
+    return json({
+      ok: true,
+      version: VERSION,
+      accepts: "POST Particle webhook"
+    });
   }
-
-  let body: { coreid?: string; data?: string }
+  if (req.method !== "POST") {
+    return json({
+      error: "method not allowed"
+    }, 405);
+  }
+  let body;
   try {
-    body = await req.json()
-  } catch {
-    return new Response('invalid JSON', { status: 400 })
+    body = await req.json();
+  } catch  {
+    return json({
+      error: "body is not JSON"
+    }, 400);
   }
-
-  if (!body.coreid || typeof body.data !== 'string') {
-    return new Response('missing coreid or data', { status: 400 })
+  // A Particle webhook wraps the event as { event, data, coreid, published_at }.
+  // Accept a bare string too, so the endpoint can be tested with curl.
+  let raw;
+  let deviceId;
+  if (typeof body === "string") {
+    raw = body;
+    deviceId = "manual";
+  } else if (typeof body.data === "string") {
+    raw = body.data;
+    deviceId = typeof body.coreid === "string" && body.coreid.length > 0 ? body.coreid : "unknown";
+  } else if (typeof body.payload === "string") {
+    // Particle's webhook JSON template can nest it as `payload`
+    raw = body.payload;
+    deviceId = typeof body.coreid === "string" && body.coreid.length > 0 ? body.coreid : "unknown";
+  } else {
+    return json({
+      error: "no data field in body"
+    }, 400);
   }
-
-  let rows: Bucket[]
-  try {
-    rows = parsePayload(body.coreid, body.data)
-  } catch (e) {
-    return new Response(e instanceof Error ? e.message : 'bad payload', {
-      status: 400,
-    })
+  const { rows, error } = parseCsv(raw, deviceId);
+  if (error) return json({
+    error
+  }, 400);
+  if (rows.length === 0) return json({
+    inserted: 0,
+    note: "no parsable buckets"
+  });
+  const supabase = createClient(Deno.env.get("SUPABASE_URL"), // service role: bypasses RLS. Safe here because this function is the only
+  // writer and the gateway has already required a JWT.
+  Deno.env.get("SUPABASE_SERVICE_ROLE_KEY"), {
+    auth: {
+      persistSession: false
+    }
+  });
+  const { data, error: dbError } = await supabase.from("activity_buckets").upsert(rows, {
+    onConflict: "device_id,bucket_start",
+    ignoreDuplicates: true
+  }).select("bucket_start");
+  if (dbError) {
+    console.error("insert failed", dbError.message);
+    return json({
+      error: "database insert failed",
+      detail: dbError.message
+    }, 500);
   }
-
-  if (rows.length === 0) {
-    return Response.json({ inserted: 0, duplicates: 0 })
-  }
-
-  // ignoreDuplicates => ON CONFLICT DO NOTHING, and .select() returns only the
-  // rows actually inserted, so a replay is a no-op that reports duplicates
-  // rather than erroring or double-counting.
-  const { data, error } = await supabase
-    .from('activity_buckets')
-    .upsert(rows, {
-      onConflict: 'device_id,bucket_start',
-      ignoreDuplicates: true,
-    })
-    .select()
-
-  if (error) {
-    return new Response(JSON.stringify({ error: error.message }), {
-      status: 500,
-      headers: { 'content-type': 'application/json' },
-    })
-  }
-
-  const inserted = data?.length ?? 0
-  return Response.json({ inserted, duplicates: rows.length - inserted })
-})
+  const inserted = data?.length ?? 0;
+  return json({
+    ok: true,
+    device_id: deviceId,
+    parsed: rows.length,
+    inserted,
+    duplicates: rows.length - inserted
+  });
+});

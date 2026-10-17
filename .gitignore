@@ -9,3 +9,6 @@ firmware/*/lib/InternetButton/
 # Build output
 *.bin
 build/
+
+# Supabase CLI local cache for the linked project
+supabase/.temp/
