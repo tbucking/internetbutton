@@ -133,6 +133,9 @@ device cache (RAM ring)
 
 Project `internetbutton`, ref `jdewkdjgbghtvzwsmpuw`, `us-east-2`, Postgres 17.11.
 
+Source lives in the repo: [`supabase/functions/ingest-activity/index.ts`](../../supabase/functions/ingest-activity/index.ts)
+(the function) and [`supabase/migrations/`](../../supabase/migrations/) (the table and RLS).
+
 ### Table
 
 `public.activity_buckets`, one row per minute per device:

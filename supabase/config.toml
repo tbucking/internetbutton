@@ -1,0 +1,9 @@
+# Per-function configuration.
+# https://supabase.com/docs/guides/functions/function-configuration
+
+[functions.ingest-activity]
+# Require a valid JWT (the Particle webhook presents the project's publishable
+# anon key in the Authorization header). This is the default, but it is stated
+# explicitly so the security posture is visible in the repo and survives a
+# future default change.
+verify_jwt = true
