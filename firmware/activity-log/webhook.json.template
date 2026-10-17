@@ -1,0 +1,17 @@
+{
+  "event": "activity",
+  "url": "https://jdewkdjgbghtvzwsmpuw.supabase.co/functions/v1/ingest-activity",
+  "requestType": "POST",
+  "noDefaults": true,
+  "rejectUnauthorized": true,
+  "headers": {
+    "content-type": "application/json",
+    "Authorization": "Bearer <ANON_KEY>"
+  },
+  "json": {
+    "event": "{{PARTICLE_EVENT_NAME}}",
+    "data": "{{PARTICLE_EVENT_VALUE}}",
+    "coreid": "{{PARTICLE_DEVICE_ID}}",
+    "published_at": "{{PARTICLE_PUBLISHED_AT}}"
+  }
+}

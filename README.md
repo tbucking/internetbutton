@@ -179,6 +179,7 @@ Honest accounting, because "it compiles" is not "it works":
 | `motion-pulse` axis weighting (Z×2) | **Not implemented** — a measured 3× margin is available but it would change how the ring responds to sideways motion |
 | `activity-log` | Cache fills, upload path and batching verified (`sent` 5→7 in one event, `dropped = 0`); `EEPROM.length()` measured at **2048 B**, correcting a quoted 3.5 KB |
 | `activity-log` survives reboot | **No, by design** — RAM-only cache, and a reboot was observed wiping it. Cause of that reboot **unknown**, not reproduced |
+| `activity-log` cloud ingest | **Verified end to end** — Particle webhook → Supabase Edge Function → Postgres; 5 buckets landed as 5 rows, unauth calls get `401`, replayed payloads are no-ops |
 | Physical button geometry | Verified against the hardware, after an initial **wrong** mapping |
 
 ## Notes

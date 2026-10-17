@@ -110,16 +110,95 @@ would cost a page swap roughly every 4 hours, which is affordable.
 
 ## Decisions taken
 
-1. **Cloud = Particle Cloud events.** The device publishes `activity` events; something must consume
-   them (a webhook to an endpoint you control, or a subscriber). Particle Cloud is a stream, not a
-   store, so persistence at the far end is still an open piece.
+1. **Cloud = Supabase.** The device publishes `activity` events, a Particle webhook forwards them to a
+   Supabase Edge Function, and Postgres stores them. Particle Cloud is a stream, not a store, so the
+   persistence lives at the Supabase end — see "The cloud end" below.
 2. **A record is an aggregated 1-minute bucket:** count, sum, max delta, max |dz|.
 3. **RAM only.** No EEPROM snapshot, so a reboot loses all unuploaded buckets (observed once).
 4. **Cache is on the device**, not on the local network.
 
-### Still open
+---
 
-- **What consumes the events?** Without a webhook or a subscriber the data is published and dropped.
-- **Is `maxDz` worth keeping?** It saturated at 255 in the first run; widen it or drop it.
+## The cloud end: Supabase
+
+Implemented. The path is:
+
+```
+device cache (RAM ring)
+   -> Particle.publish("activity", csv)          ~1 event/sec max, 1024 B payload
+      -> Particle webhook (event `activity`)     adds Authorization + JSON envelope
+         -> Edge Function `ingest-activity`      parses CSV, upserts
+            -> Postgres `public.activity_buckets`
+```
+
+Project `internetbutton`, ref `jdewkdjgbghtvzwsmpuw`, `us-east-2`, Postgres 17.11.
+
+### Table
+
+`public.activity_buckets`, one row per minute per device:
+
+| column | type | notes |
+| --- | --- | --- |
+| `id` | bigint identity | |
+| `device_id` | text | Particle `coreid` |
+| `bucket_start` | timestamptz | bucket start, UTC |
+| `impulses` | integer | impulses in the minute |
+| `impulse_sum` | bigint | sum of peak deltas (mean = `impulse_sum / impulses`) |
+| `max_delta` | integer, null | largest peak; **NULL** when the firmware sent 0 |
+| `max_dz` | integer, null | largest \|dz\|; **NULL** when 0, and **255 means "at least 255"** |
+| `batch` | integer | position within the event, 0-based |
+| `received_at` | timestamptz | server default `now()` |
+
+`unique (device_id, bucket_start)` plus an index on `bucket_start desc`.
+
+### Why an Edge Function rather than posting straight to PostgREST
+
+The firmware publishes **CSV**, not JSON, because the 1024-byte payload cap makes punctuation
+expensive. PostgREST cannot parse that. The function is the single place the format is understood, so
+everything downstream sees ordinary rows; it also keeps the compact wire format, which is what lets 50
+buckets ride in one event.
+
+### Idempotency is the important property
+
+The firmware retries any bucket it could not confirm, so **the same bucket will arrive more than
+once**. The function upserts with `ignoreDuplicates` against the unique constraint, so a replay is a
+no-op. Verified: posting the identical payload twice returned `inserted: 1` then
+`inserted: 0, duplicates: 1` — no error, no second row. A closed bucket is immutable, so ignoring a
+duplicate loses nothing.
+
+### Authentication
+
+The function runs with `verify_jwt: true`, so the gateway rejects unauthenticated calls (verified:
+`HTTP 401` with no `Authorization` header). The Particle webhook sends the **publishable (anon) key**
+as a bearer token. That key is public by design, so putting it in the webhook config is acceptable,
+but it means the protection is "must present the project's publishable key", not "must know a
+secret" — i.e. it stops unauthenticated traffic and junk, not a determined third party. If that is not
+enough, move to a shared secret in an Edge Function secret and set `verify_jwt: false`.
+
+Inside the function, inserts use the **service role** key (auto-injected by the platform) to bypass
+RLS.
+
+### RLS
+
+`activity_buckets` has RLS **enabled with no policies**. That is deliberate: the anon and authenticated
+roles can read nothing and write nothing, and only the service role inside the function can insert.
+The security advisor reports this as `rls_enabled_no_policy` (level INFO) — that is the intended
+state, not an oversight. Add a read policy only if a client needs to query the data directly.
+
+### Verified end to end
+
+Forcing the device to publish (`flush`) moved 5 pending buckets into Postgres: 5 rows, 02:35–02:39 UTC,
+3,833 impulses total, one device. `sent` went 22 → 27 and `pending` 5 → 0 on the device at the same
+time, so both ends agree.
+
+---
+
+## Still open
+
+- **Anon key in the webhook config.** Publishable, but it is the only gate on the ingest endpoint.
+- **`max_dz` saturates at 255** (`uint8` in firmware v1), so large values are lower bounds. Widen the
+  field in the firmware or drop the column.
 - **Should the cache survive reboots?** Revisit if the reboot seen in the first run turns out to be
   recurring.
+- **No retention policy.** Rows accumulate at 1,440/day/device (~525k/year), which is small but
+  unbounded.
