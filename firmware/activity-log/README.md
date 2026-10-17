@@ -119,6 +119,29 @@ activity    v1,<startMin>,<n>,<count>,<sum>,<max>,<dz>;<count>,<sum>,<max>,<dz>;
 CSV rather than JSON because the payload cap is 1024 bytes and every byte spent on punctuation is a
 bucket that does not get uploaded. Up to 50 buckets per event, at most one publish per 1.1 s.
 
+## How often it uploads
+
+| | |
+| --- | --- |
+| Buckets close | every **1 minute** |
+| Publish attempt | every **5 minutes** (`flushmin`, settable 1–60) |
+| Payload per send | up to **50** buckets in one event |
+| Measured cadence | **300 s**, 5 buckets per event, `pending` draining to 0 |
+
+Measured, not just configured: three consecutive batches arrived at `02:40:39`, `02:45:39` and
+`02:50:39` UTC — exactly 300 s apart, each carrying 5 contiguous one-minute buckets. The device's own
+counters agreed (`sent` +5, `pending` → 0 at the same moments).
+
+Three things modulate that cadence:
+
+- **`flushmin` is not persisted.** It reverts to 5 on every reboot, so `sent` looks stuck for the first
+  5 minutes after a flash. That is the cache working, not a fault.
+- **A backlog drains in bursts.** If more than 50 buckets are waiting it sends 50, then another 50
+  after 1.1 s, rather than waiting out another interval. At one bucket per minute this never triggers.
+- **Offline means it waits, not fails.** Publishing is skipped while `!Particle.connected()`; buckets
+  keep accumulating and the next interval sends what fits. If the outage outlasts the 240-slot ring
+  (4 hours), the oldest are overwritten and counted in `dropped`.
+
 ## Where the data goes: Supabase
 
 ```
@@ -190,6 +213,7 @@ If both stay at zero, nothing was lost. That is the point of exposing them.
 | Cache survives a reboot | **No, by design** — a reboot was observed and wiped the history |
 | Cause of that reboot | **Unknown** — `resetReason` read after, `SOFTWARE`; not reproduced in 3 min |
 | Supabase ingest, end to end | Yes — device `flush` moved 5 pending buckets into 5 Postgres rows (02:35–02:39 UTC, 3,833 impulses) |
+| Upload cadence | Yes — measured 300 s between batches, 5 buckets each, three consecutive batches |
 | Ingest rejects unauthenticated calls | Yes — `HTTP 401` with no `Authorization` header |
 | Ingest is idempotent | Yes — replaying the same payload returned `inserted: 0, duplicates: 1` |
 
