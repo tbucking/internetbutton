@@ -72,7 +72,7 @@ particle binary inspect simon.bin        # MUST say version 2302
 
 ## Firmware
 
-Four standalone projects, each a complete Particle application. Only one can run on the device at a time.
+Five standalone projects, each a complete Particle application. Only one can run on the device at a time.
 
 | Project | What it does | README |
 | --- | --- | --- |
@@ -80,6 +80,7 @@ Four standalone projects, each a complete Particle application. Only one can run
 | [`firmware/interval-timer`](firmware/interval-timer/) | Pomodoro-style timer. The ring is a physical progress bar; work/break phases, chimes, and auto-pause when you pick it up | [README](firmware/interval-timer/README.md) |
 | [`firmware/desk-presence`](firmware/desk-presence/) | Reports whether the desk has been disturbed recently and **publishes a cloud event on transition**, so a Particle webhook can act on it | *todo* |
 | [`firmware/simon`](firmware/simon/) | The "repeat the sequence" memory game — 4 buttons, 4 colours, 4 tones, 11 LEDs | [README](firmware/simon/README.md) |
+| [`firmware/motion-pulse`](firmware/motion-pulse/) | A VU meter for motion: all 11 LEDs pulse, brightness proportional to severity. Sensitive enough to detect **typing on a keyboard next to the device** | [README](firmware/motion-pulse/README.md) |
 
 `shield-check` and `desk-presence` have no README yet — their purpose is above, but the detail is not
 written up.
@@ -129,6 +130,9 @@ remotely. That is not decoration — it is what makes the firmware verifiable:
   press, so the game can be played and checked programmatically.
 - `interval-timer` exposes `state`/`remain`/`running`/`paused`.
 - `desk-presence` exposes `presence`/`last`/`published`/`pending`.
+- `motion-pulse` exposes `hist`, a 13-bin histogram of impulse magnitudes, so detection *coverage* can
+  be measured instead of judged by eye — a single `peak` cannot tell "caught everything" from "caught
+  one hard hit".
 
 Two recurring lessons came out of this (`docs/INIT.md` §8):
 
@@ -150,6 +154,7 @@ firmware/shield-check/        hardware verification
 firmware/interval-timer/      pomodoro timer
 firmware/desk-presence/       motion-based presence detection
 firmware/simon/               memory game
+firmware/motion-pulse/        motion VU meter; detects typing
 ```
 
 Per-project `lib/InternetButton/` directories exist on disk after a build but are **gitignored** —
@@ -168,6 +173,8 @@ Honest accounting, because "it compiles" is not "it works":
 | `desk-presence` | Publish path verified end-to-end; state transitions and counters verified |
 | `simon` | Game logic verified incl. a wrong-press negative control; all four buttons verified |
 | `simon` win state at `MAX_SEQ = 64` | **Not verified** — needs 64 correct rounds |
+| `motion-pulse` | Detection measured, not assumed: typing is **14× the hands-off impulse rate** (8.8/s vs 0.6/s), Z axis confirmed as the carrier (peak 12 vs 4) |
+| `motion-pulse` axis weighting (Z×2) | **Not implemented** — a measured 3× margin is available but it would change how the ring responds to sideways motion |
 | Physical button geometry | Verified against the hardware, after an initial **wrong** mapping |
 
 ## Notes
