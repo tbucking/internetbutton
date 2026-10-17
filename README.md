@@ -72,7 +72,7 @@ particle binary inspect simon.bin        # MUST say version 2302
 
 ## Firmware
 
-Five standalone projects, each a complete Particle application. Only one can run on the device at a time.
+Six standalone projects, each a complete Particle application. Only one can run on the device at a time.
 
 | Project | What it does | README |
 | --- | --- | --- |
@@ -81,6 +81,7 @@ Five standalone projects, each a complete Particle application. Only one can run
 | [`firmware/desk-presence`](firmware/desk-presence/) | Reports whether the desk has been disturbed recently and **publishes a cloud event on transition**, so a Particle webhook can act on it | *todo* |
 | [`firmware/simon`](firmware/simon/) | The "repeat the sequence" memory game — 4 buttons, 4 colours, 4 tones, 11 LEDs | [README](firmware/simon/README.md) |
 | [`firmware/motion-pulse`](firmware/motion-pulse/) | A VU meter for motion: all 11 LEDs pulse, brightness proportional to severity. Sensitive enough to detect **typing on a keyboard next to the device** | [README](firmware/motion-pulse/README.md) |
+| [`firmware/activity-log`](firmware/activity-log/) | Records accelerometer activity into a **local cache** of 1-minute buckets and uploads them to the cloud in batches. The remembering counterpart to `motion-pulse` | [README](firmware/activity-log/README.md) |
 
 `shield-check` and `desk-presence` have no README yet — their purpose is above, but the detail is not
 written up.
@@ -155,6 +156,7 @@ firmware/interval-timer/      pomodoro timer
 firmware/desk-presence/       motion-based presence detection
 firmware/simon/               memory game
 firmware/motion-pulse/        motion VU meter; detects typing
+firmware/activity-log/        activity cache, batch-uploaded to the cloud
 ```
 
 Per-project `lib/InternetButton/` directories exist on disk after a build but are **gitignored** —
@@ -175,6 +177,8 @@ Honest accounting, because "it compiles" is not "it works":
 | `simon` win state at `MAX_SEQ = 64` | **Not verified** — needs 64 correct rounds |
 | `motion-pulse` | Detection measured, not assumed: typing is **14× the hands-off impulse rate** (8.8/s vs 0.6/s), Z axis confirmed as the carrier (peak 12 vs 4) |
 | `motion-pulse` axis weighting (Z×2) | **Not implemented** — a measured 3× margin is available but it would change how the ring responds to sideways motion |
+| `activity-log` | Cache fills, upload path and batching verified (`sent` 5→7 in one event, `dropped = 0`); `EEPROM.length()` measured at **2048 B**, correcting a quoted 3.5 KB |
+| `activity-log` survives reboot | **No, by design** — RAM-only cache, and a reboot was observed wiping it. Cause of that reboot **unknown**, not reproduced |
 | Physical button geometry | Verified against the hardware, after an initial **wrong** mapping |
 
 ## Notes
