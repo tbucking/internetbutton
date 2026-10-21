@@ -72,7 +72,7 @@ particle binary inspect simon.bin        # MUST say version 2302
 
 ## Firmware
 
-Six standalone projects, each a complete Particle application. Only one can run on the device at a time.
+Seven standalone projects, each a complete Particle application. Only one can run on the device at a time.
 
 | Project | What it does | README |
 | --- | --- | --- |
@@ -82,6 +82,7 @@ Six standalone projects, each a complete Particle application. Only one can run 
 | [`firmware/simon`](firmware/simon/) | The "repeat the sequence" memory game — 4 buttons, 4 colours, 4 tones, 11 LEDs | [README](firmware/simon/README.md) |
 | [`firmware/motion-pulse`](firmware/motion-pulse/) | A VU meter for motion: all 11 LEDs pulse, brightness proportional to severity. Sensitive enough to detect **typing on a keyboard next to the device** | [README](firmware/motion-pulse/README.md) |
 | [`firmware/activity-log`](firmware/activity-log/) | Records accelerometer activity into a **local cache** of 1-minute buckets and uploads them to the cloud in batches. The remembering counterpart to `motion-pulse` | [README](firmware/activity-log/README.md) |
+| [`firmware/wifi-debug`](firmware/wifi-debug/) | Diagnostic: streams every Wi-Fi join attempt over USB serial, with the stored credentials, a scan from the Photon's own radio, and per-state timings | [README](firmware/wifi-debug/README.md) |
 
 `shield-check` and `desk-presence` have no README yet — their purpose is above, but the detail is not
 written up.
@@ -157,6 +158,7 @@ firmware/desk-presence/       motion-based presence detection
 firmware/simon/               memory game
 firmware/motion-pulse/        motion VU meter; detects typing
 firmware/activity-log/        activity cache, batch-uploaded to the cloud
+firmware/wifi-debug/          Wi-Fi connection diagnostics over USB serial
 ```
 
 Per-project `lib/InternetButton/` directories exist on disk after a build but are **gitignored** —
@@ -180,6 +182,7 @@ Honest accounting, because "it compiles" is not "it works":
 | `activity-log` | Cache fills, upload path and batching verified (`sent` 5→7 in one event, `dropped = 0`); `EEPROM.length()` measured at **2048 B**, correcting a quoted 3.5 KB |
 | `activity-log` survives reboot | **No, by design** — RAM-only cache, and a reboot was observed wiping it. Cause of that reboot **unknown**, not reproduced |
 | `activity-log` cloud ingest | **Verified end to end** — Particle webhook → Supabase Edge Function → Postgres; 5 buckets landed as 5 rows, unauth calls get `401`, replayed payloads are no-ops |
+| `wifi-debug` | Runs on the device: boot report, scans, state changes and network events all logged; scan-only mode and the LED meter verified. Flashed over USB in DFU mode (`particle usb dfu` + `particle flash --usb`), which worked first time from macOS |
 | Physical button geometry | Verified against the hardware, after an initial **wrong** mapping |
 
 ## Notes
